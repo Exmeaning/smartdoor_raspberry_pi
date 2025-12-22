@@ -151,7 +151,10 @@ class SmartDoorController:
     
     def _report_status(self):
         """上报状态"""
-        self._ws.report_door_status(self._door_status)
+        self._ws.report_door_status(
+            self._door_status,
+            {"testAngle": self.config.MOTOR_OPEN_ANGLE}
+        )
     
     # ==================== K230 回调 ====================
     
@@ -218,6 +221,26 @@ class SmartDoorController:
         elif cmd == "REFRESH":
             self._report_status()
             
+        elif cmd == "ROTATE":
+            try:
+                angle = float(data.get("angle", 0))
+                if angle != 0:
+                    cw = angle > 0
+                    abs_angle = abs(angle)
+                    
+                    direction_str = "顺时针" if cw else "逆时针"
+                    self._ws.report_log(LogType.SYSTEM, f"测试转动: {abs_angle}° {direction_str}")
+                    
+                    threading.Thread(
+                        target=self._motor.rotate,
+                        args=(abs_angle, cw),
+                        daemon=True
+                    ).start()
+                else:
+                    self._ws.report_log(LogType.SYSTEM, "转动角度不能为0")
+            except ValueError:
+                self._ws.report_log(LogType.SYSTEM, "无效的角度数值")
+
         elif cmd == "SET_CONFIG":
             self._handle_set_config(data)
             
