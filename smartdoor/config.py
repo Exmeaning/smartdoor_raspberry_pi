@@ -28,6 +28,14 @@ class Config:
     # 自动关门时间（秒）
     AUTO_CLOSE_DELAY: float = 5.0
     
+    # 电机配置
+    MOTOR_PUL_PIN: int = 18
+    MOTOR_DIR_PIN: int = 23
+    MOTOR_PULSES_PER_REV: int = 800
+    MOTOR_OPEN_ANGLE: float = 90.0
+    MOTOR_MIN_DELAY: float = 0.0005
+    MOTOR_MAX_DELAY: float = 0.002
+    
     # 日志级别
     LOG_LEVEL: int = logging.INFO
 
@@ -43,6 +51,12 @@ def load_config() -> Config:
         FACE_WINDOW_SECONDS=float(os.getenv("FACE_WINDOW_SECONDS", "5.0")),
         FACE_SCORE_THRESHOLD=int(os.getenv("FACE_SCORE_THRESHOLD", "80")),
         AUTO_CLOSE_DELAY=float(os.getenv("AUTO_CLOSE_DELAY", "5.0")),
+        MOTOR_PUL_PIN=int(os.getenv("MOTOR_PUL_PIN", "18")),
+        MOTOR_DIR_PIN=int(os.getenv("MOTOR_DIR_PIN", "23")),
+        MOTOR_PULSES_PER_REV=int(os.getenv("MOTOR_PULSES_PER_REV", "800")),
+        MOTOR_OPEN_ANGLE=float(os.getenv("MOTOR_OPEN_ANGLE", "90.0")),
+        MOTOR_MIN_DELAY=float(os.getenv("MOTOR_MIN_DELAY", "0.0005")),
+        MOTOR_MAX_DELAY=float(os.getenv("MOTOR_MAX_DELAY", "0.002")),
         LOG_LEVEL=getattr(
             logging, 
             os.getenv("LOG_LEVEL", "INFO").upper(), 
