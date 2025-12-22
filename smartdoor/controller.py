@@ -22,6 +22,7 @@ class SmartDoorController:
     def __init__(self, config: Config):
         self.config = config
         self._running = False
+        self._k230_connected = False
         
         # 初始化组件
         self._k230 = K230Serial(
@@ -68,32 +69,36 @@ class SmartDoorController:
         
         # 1. 连接 K230
         if not self._k230.connect():
-            logger.error("❌ K230 连接失败")
-            return False
-        
-        # 2. 测试通信
-        if not self._k230.ping():
-            logger.error("❌ K230 PING 失败")
-            self._k230.disconnect()
-            return False
-        
-        logger.info("✅ K230 连接正常")
+            logger.warning("⚠️ K230 连接失败，将仅运行门控功能")
+            self._k230_connected = False
+        else:
+            # 2. 测试通信
+            if not self._k230.ping():
+                logger.error("❌ K230 PING 失败")
+                self._k230.disconnect()
+                self._k230_connected = False
+            else:
+                logger.info("✅ K230 连接正常")
+                self._k230_connected = True
         
         # 3. 设置回调
-        self._k230.on_face_detection = self._on_face_detection
-        self._k230.on_face_recognition = self._on_face_recognition
+        if self._k230_connected:
+            self._k230.on_face_detection = self._on_face_detection
+            self._k230.on_face_recognition = self._on_face_recognition
+            
         self._ws.on_command = self._on_ws_command
         
         # 4. 启动 WebSocket（异步，不阻塞）
         self._ws.start_async()
         
         # 5. 启动人脸识别
-        if self._k230.start_function(K230Function.FACE_RECOGNITION):
-            logger.info("✅ 人脸识别已启动")
-        else:
-            logger.warning("⚠️ 人脸识别启动失败，尝试人脸检测")
-            if self._k230.start_function(K230Function.FACE_DETECTION):
-                logger.info("✅ 人脸检测已启动")
+        if self._k230_connected:
+            if self._k230.start_function(K230Function.FACE_RECOGNITION):
+                logger.info("✅ 人脸识别已启动")
+            else:
+                logger.warning("⚠️ 人脸识别启动失败，尝试人脸检测")
+                if self._k230.start_function(K230Function.FACE_DETECTION):
+                    logger.info("✅ 人脸检测已启动")
         
         # 6. 启动定时器
         self._running = True
@@ -105,7 +110,7 @@ class SmartDoorController:
         self._timer_thread.start()
         
         logger.info("=" * 50)
-        logger.info("SmartDoor 控制器已启动")
+        logger.info("SmartDoor 控制器已启动 (K230: {})".format("在线" if self._k230_connected else "离线"))
         logger.info("=" * 50)
         return True
     
@@ -119,9 +124,13 @@ class SmartDoorController:
         if self._close_timer:
             self._close_timer.cancel()
         
-        # 停止 K230
-        self._k230.stop_function()
-        self._k230.disconnect()
+        # 停止 K230 (如果已连接)
+        if getattr(self, '_k230_connected', False):
+            try:
+                self._k230.stop_function()
+                self._k230.disconnect()
+            except Exception as e:
+                logger.error(f"K230 停止失败: {e}")
         
         # 断开 WebSocket
         self._ws.disconnect()
