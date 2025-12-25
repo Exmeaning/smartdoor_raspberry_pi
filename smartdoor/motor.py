@@ -90,40 +90,64 @@ class StepperMotor:
                 time.sleep(1.0)  # 模拟转动时间
                 
     def _send_pulses(self, count: int):
-        """发送脉冲 (带加减速)"""
-        # 简单的梯形加减速
-        # 加速段: 前 20%
-        # 减速段: 后 20%
-        # 匀速段: 中间 60%
+        """发送脉冲 (带梯形加减速)
         
-        ramp_steps = int(count * 0.2)
-        if ramp_steps < 5:
-            # 脉冲太少，不加减速
-            ramp_steps = 0
-            
-        current_delay = self.max_delay
-        delay_step = (self.max_delay - self.min_delay) / (ramp_steps if ramp_steps > 0 else 1)
+        机制: 梯形加减速 (20% 加速 - 60% 巡航 - 20% 减速)
+        控制逻辑: 通过线性改变脉冲频率来实现平滑的速度变化
+        """
+        if count <= 0:
+            return
+
+        # 1. 计算各阶段步数
+        acc_steps = int(count * 0.2)
+        dec_steps = int(count * 0.2)
+        # 剩余为匀速段，约为 count * 0.6
+        
+        # 2. 计算频率范围 (Hz)
+        # min_delay (最小间隔) -> 最高频率 (巡航速度)
+        # max_delay (最大间隔) -> 最低频率 (起步/停止速度)
+        # 保护除以零
+        min_freq = 1.0 / self.max_delay if self.max_delay > 0 else 500.0
+        max_freq = 1.0 / self.min_delay if self.min_delay > 0 else 2000.0
         
         for i in range(count):
-            # 计算当前延迟
-            if i < ramp_steps:
-                # 加速
-                current_delay -= delay_step
-            elif i >= count - ramp_steps:
-                # 减速
-                current_delay += delay_step
-            else:
-                # 匀速
-                current_delay = self.min_delay
-                
-            # 限制范围
-            current_delay = max(self.min_delay, min(self.max_delay, current_delay))
+            current_freq = max_freq  # 默认为巡航频率
             
-            # 发送脉冲 (高电平有效)
+            if i < acc_steps:
+                # --- 加速段 (前 20%) ---
+                # 频率从 min_freq 线性增加到 max_freq
+                if acc_steps > 1:
+                    progress = i / (acc_steps - 1)
+                    current_freq = min_freq + (max_freq - min_freq) * progress
+                else:
+                    current_freq = min_freq
+                    
+            elif i >= count - dec_steps:
+                # --- 减速段 (后 20%) ---
+                # 频率从 max_freq 线性减小到 min_freq
+                steps_remaining = count - i
+                if dec_steps > 1:
+                    # 倒数第 dec_steps 步时 (刚进入减速), 进度为 1.0 (Max)
+                    # 倒数第 1 步时 (最后一步), 进度为 0.0 (Min)
+                    progress = (steps_remaining - 1) / (dec_steps - 1)
+                    current_freq = min_freq + (max_freq - min_freq) * progress
+                else:
+                    current_freq = min_freq
+            
+            # --- 匀速段 (中间 60%) ---
+            # 保持 current_freq = max_freq
+            
+            # 安全限制频率范围
+            current_freq = max(min_freq, min(max_freq, current_freq))
+            
+            # 计算当前脉冲延迟
+            delay = 1.0 / current_freq
+            
+            # 生成脉冲 (50% 占空比)
             GPIO.output(self.pul_pin, GPIO.HIGH)
-            time.sleep(current_delay / 2)
+            time.sleep(delay / 2)
             GPIO.output(self.pul_pin, GPIO.LOW)
-            time.sleep(current_delay / 2)
+            time.sleep(delay / 2)
 
     def cleanup(self):
         """清理 GPIO"""
