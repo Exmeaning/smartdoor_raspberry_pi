@@ -256,16 +256,22 @@ class K230Serial:
             }
         return None
     
-    def start_function(self, func_id: int) -> bool:
-        """启动功能"""
-        resp = self.send_command("START", func_id)
+    def start_function(self, func_id: int, timeout: float = 10.0) -> bool:
+        """
+        启动功能
+    
+        Args:
+            func_id: 功能ID
+            timeout: 超时时间，K230初始化可能较慢，默认10秒
+        """
+        resp = self.send_command("START", func_id, timeout=timeout)
         if resp:
             logger.debug(f"START 响应: is_ok={resp.is_ok}")
         return resp is not None and resp.is_ok
-    
-    def stop_function(self) -> bool:
+
+    def stop_function(self, timeout: float = 5.0) -> bool:
         """停止功能"""
-        resp = self.send_command("STOP")
+        resp = self.send_command("STOP", timeout=timeout)
         return resp is not None and resp.is_ok
     
     def register_face(self, user_id: str) -> bool:
@@ -287,7 +293,7 @@ class K230Serial:
             return resp.data
         return []
     
-    def reload_database(self) -> bool:
+    def reload_database(self, timeout: float = 5.0) -> bool:
         """重新加载数据库"""
-        resp = self.send_command("RELOAD")
+        resp = self.send_command("RELOAD", timeout=timeout)
         return resp is not None and resp.is_ok

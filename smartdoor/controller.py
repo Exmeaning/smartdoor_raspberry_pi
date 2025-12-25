@@ -11,6 +11,7 @@ from .protocol import FaceDetection, FaceRecognition
 from .k230_serial import K230Serial
 from .websocket_client import WebSocketClient
 from .face_manager import FaceRecognitionManager
+from .motor import StepperMotor
 
 logger = logging.getLogger("SmartDoor.Ctrl")
 
@@ -21,6 +22,7 @@ class SmartDoorController:
     def __init__(self, config: Config):
         self.config = config
         self._running = False
+        self._k230_connected = False
         
         # 初始化组件
         self._k230 = K230Serial(
@@ -45,6 +47,15 @@ class SmartDoorController:
         self._door_status = DoorStatus.CLOSED
         self._close_timer: Optional[threading.Timer] = None
         self._timer_thread: Optional[threading.Thread] = None
+
+        # 电机控制
+        self._motor = StepperMotor(
+            pul_pin=config.MOTOR_PUL_PIN,
+            dir_pin=config.MOTOR_DIR_PIN,
+            pulses_per_rev=config.MOTOR_PULSES_PER_REV,
+            min_delay=config.MOTOR_MIN_DELAY,
+            max_delay=config.MOTOR_MAX_DELAY
+        )
     
     @property
     def door_status(self) -> DoorStatus:
@@ -58,32 +69,36 @@ class SmartDoorController:
         
         # 1. 连接 K230
         if not self._k230.connect():
-            logger.error("❌ K230 连接失败")
-            return False
-        
-        # 2. 测试通信
-        if not self._k230.ping():
-            logger.error("❌ K230 PING 失败")
-            self._k230.disconnect()
-            return False
-        
-        logger.info("✅ K230 连接正常")
+            logger.warning("⚠️ K230 连接失败，将仅运行门控功能")
+            self._k230_connected = False
+        else:
+            # 2. 测试通信
+            if not self._k230.ping():
+                logger.error("❌ K230 PING 失败")
+                self._k230.disconnect()
+                self._k230_connected = False
+            else:
+                logger.info("✅ K230 连接正常")
+                self._k230_connected = True
         
         # 3. 设置回调
-        self._k230.on_face_detection = self._on_face_detection
-        self._k230.on_face_recognition = self._on_face_recognition
+        if self._k230_connected:
+            self._k230.on_face_detection = self._on_face_detection
+            self._k230.on_face_recognition = self._on_face_recognition
+            
         self._ws.on_command = self._on_ws_command
         
         # 4. 启动 WebSocket（异步，不阻塞）
         self._ws.start_async()
         
         # 5. 启动人脸识别
-        if self._k230.start_function(K230Function.FACE_RECOGNITION):
-            logger.info("✅ 人脸识别已启动")
-        else:
-            logger.warning("⚠️ 人脸识别启动失败，尝试人脸检测")
-            if self._k230.start_function(K230Function.FACE_DETECTION):
-                logger.info("✅ 人脸检测已启动")
+        if self._k230_connected:
+            if self._k230.start_function(K230Function.FACE_RECOGNITION):
+                logger.info("✅ 人脸识别已启动")
+            else:
+                logger.warning("⚠️ 人脸识别启动失败，尝试人脸检测")
+                if self._k230.start_function(K230Function.FACE_DETECTION):
+                    logger.info("✅ 人脸检测已启动")
         
         # 6. 启动定时器
         self._running = True
@@ -95,7 +110,7 @@ class SmartDoorController:
         self._timer_thread.start()
         
         logger.info("=" * 50)
-        logger.info("SmartDoor 控制器已启动")
+        logger.info("SmartDoor 控制器已启动 (K230: {})".format("在线" if self._k230_connected else "离线"))
         logger.info("=" * 50)
         return True
     
@@ -109,9 +124,13 @@ class SmartDoorController:
         if self._close_timer:
             self._close_timer.cancel()
         
-        # 停止 K230
-        self._k230.stop_function()
-        self._k230.disconnect()
+        # 停止 K230 (如果已连接)
+        if getattr(self, '_k230_connected', False):
+            try:
+                self._k230.stop_function()
+                self._k230.disconnect()
+            except Exception as e:
+                logger.error(f"K230 停止失败: {e}")
         
         # 断开 WebSocket
         self._ws.disconnect()
@@ -141,7 +160,10 @@ class SmartDoorController:
     
     def _report_status(self):
         """上报状态"""
-        self._ws.report_door_status(self._door_status)
+        self._ws.report_door_status(
+            self._door_status,
+            {"testAngle": self.config.MOTOR_OPEN_ANGLE}
+        )
     
     # ==================== K230 回调 ====================
     
@@ -207,6 +229,48 @@ class SmartDoorController:
         
         elif cmd == "REFRESH":
             self._report_status()
+            
+        elif cmd == "ROTATE":
+            try:
+                angle = float(data.get("angle", 0))
+                if angle != 0:
+                    cw = angle > 0
+                    abs_angle = abs(angle)
+                    
+                    direction_str = "顺时针" if cw else "逆时针"
+                    self._ws.report_log(LogType.SYSTEM, f"测试转动: {abs_angle}° {direction_str}")
+                    
+                    threading.Thread(
+                        target=self._motor.rotate,
+                        args=(abs_angle, cw),
+                        daemon=True
+                    ).start()
+                else:
+                    self._ws.report_log(LogType.SYSTEM, "转动角度不能为0")
+            except ValueError:
+                self._ws.report_log(LogType.SYSTEM, "无效的角度数值")
+
+        elif cmd == "SET_CONFIG":
+            self._handle_set_config(data)
+            
+    def _handle_set_config(self, data: dict):
+        """处理配置更新"""
+        try:
+            if "angle" in data:
+                angle = float(data["angle"])
+                self.config.MOTOR_OPEN_ANGLE = angle
+                self._ws.report_log(LogType.SYSTEM, f"配置更新: 开门角度={angle}")
+                
+            if "speed" in data:
+                # 简单处理速度等级：1=慢, 2=中, 3=快
+                speed = int(data["speed"])
+                # 这里可以根据需要调整 min_delay
+                # 暂时只做日志演示
+                self._ws.report_log(LogType.SYSTEM, f"配置更新: 速度={speed}")
+                
+        except Exception as e:
+            logger.error(f"配置更新失败: {e}")
+            self._ws.report_log(LogType.SYSTEM, f"配置错误: {e}")
     
     # ==================== 门控制 ====================
     
@@ -221,9 +285,12 @@ class SmartDoorController:
         self._door_status = DoorStatus.OPEN
         self._report_status()
         
-        # TODO: GPIO 控制
-        # import RPi.GPIO as GPIO
-        # GPIO.output(DOOR_PIN, GPIO.HIGH)
+        # Motor Open (CW)
+        threading.Thread(
+            target=self._motor.rotate,
+            args=(self.config.MOTOR_OPEN_ANGLE, True),
+            daemon=True
+        ).start()
         
         # 自动关门
         self._close_timer = threading.Timer(
@@ -239,8 +306,12 @@ class SmartDoorController:
         self._door_status = DoorStatus.CLOSED
         self._report_status()
         
-        # TODO: GPIO 控制
-        # GPIO.output(DOOR_PIN, GPIO.LOW)
+        # Motor Close (CCW)
+        threading.Thread(
+            target=self._motor.rotate,
+            args=(self.config.MOTOR_OPEN_ANGLE, False),
+            daemon=True
+        ).start()
     
     # ==================== 人脸注册 ====================
     

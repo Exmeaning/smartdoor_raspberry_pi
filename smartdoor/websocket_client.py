@@ -207,14 +207,20 @@ class WebSocketClient:
     
     # ==================== 消息发送 ====================
     
-    def report_door_status(self, status: DoorStatus):
+    def report_door_status(self, status: DoorStatus, extras: dict = None):
         """上报门状态"""
         if not self._connected or not self._sio:
             return
         
         try:
-            self._sio.emit('door_status', status.value)
-            logger.debug(f"上报门状态: {status.value}")
+            data = {
+                "door": status.value
+            }
+            if extras:
+                data.update(extras)
+                
+            self._sio.emit('door_status', data)
+            logger.debug(f"上报门状态: {data}")
         except Exception as e:
             logger.error(f"上报门状态失败: {e}")
     
